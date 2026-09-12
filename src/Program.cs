@@ -11,6 +11,8 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Miniblog.Core;
 using Miniblog.Core.Services;
 
+using Serilog;
+
 using WebMarkupMin.AspNetCoreLatest;
 using WebMarkupMin.Core;
 
@@ -20,134 +22,168 @@ using IWmmLogger = WebMarkupMin.Core.Loggers.ILogger;
 using MetaWeblogService = Miniblog.Core.Services.MetaWeblogService;
 using WmmAspNetCoreLogger = WebMarkupMin.AspNetCoreLatest.AspNetCoreLogger;
 
-WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
+const string consoleOutputTemplate = "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} {Level:u3}] {SourceContext} {Message:lj}{NewLine}{Exception}";
 
-builder.WebHost.ConfigureKestrel(options => options.AddServerHeader = false);
+// Capture failures even before application configuration and services are available.
+Log.Logger = new LoggerConfiguration()
+    .Enrich.FromLogContext()
+    .WriteTo.Console(outputTemplate: consoleOutputTemplate)
+    .CreateBootstrapLogger();
 
-builder.Services.AddControllersWithViews();
-builder.Services.AddRazorPages();
+try
+{
+    Log.Information("Starting Miniblog");
 
-builder.Services.AddSingleton<IUserServices, BlogUserServices>();
-builder.Services.AddSingleton<IBlogService, FileBlogService>();
-builder.Services.Configure<BlogSettings>(builder.Configuration.GetSection("blog"));
-builder.Services.TryAddSingleton<IHttpContextAccessor, HttpContextAccessor>();
-builder.Services.AddMetaWeblog<MetaWeblogService>();
+    WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
-// Progressive Web Apps https://github.com/madskristensen/WebEssentials.AspNetCore.ServiceWorker
-builder.Services.AddProgressiveWebApp(
-    new WebEssentials.AspNetCore.Pwa.PwaOptions
-    {
-        OfflineRoute = "/shared/offline/"
-    });
+    builder.Services.AddSerilog((services, configuration) => configuration
+        .ReadFrom.Configuration(builder.Configuration)
+        .ReadFrom.Services(services)
+        .Enrich.FromLogContext()
+        .WriteTo.Console(outputTemplate: consoleOutputTemplate));
 
-// Output caching
-builder.Services.AddOutputCache(
-    options =>
-    {
-        options.AddBasePolicy(builder => builder.Cache());
-        options
-            .AddPolicy(
-                "default",
-                policy => policy.Expire(TimeSpan.FromSeconds(3600)));
-    });
+    Log.Information("Configuring Miniblog in {EnvironmentName}", builder.Environment.EnvironmentName);
 
-// Cookie authentication.
-builder.Services
-    .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
-    .AddCookie(
-        options =>
+    builder.WebHost.ConfigureKestrel(options => options.AddServerHeader = false);
+
+    builder.Services.AddControllersWithViews();
+    builder.Services.AddRazorPages();
+
+    builder.Services.AddSingleton<IUserServices, BlogUserServices>();
+    builder.Services.AddSingleton<IBlogService, FileBlogService>();
+    builder.Services.Configure<BlogSettings>(builder.Configuration.GetSection("blog"));
+    builder.Services.TryAddSingleton<IHttpContextAccessor, HttpContextAccessor>();
+    builder.Services.AddMetaWeblog<MetaWeblogService>();
+
+    // Progressive Web Apps https://github.com/madskristensen/WebEssentials.AspNetCore.ServiceWorker
+    builder.Services.AddProgressiveWebApp(
+        new WebEssentials.AspNetCore.Pwa.PwaOptions
         {
-            options.LoginPath = "/login/";
-            options.LogoutPath = "/logout/";
+            OfflineRoute = "/shared/offline/"
         });
 
-// HTML minification (https://github.com/Taritsyn/WebMarkupMin)
-builder.Services.AddSingleton<IWmmLogger, WmmAspNetCoreLogger>(); // Used by HTML minifier
-builder.Services
-    .AddWebMarkupMin(
+    // Output caching
+    builder.Services.AddOutputCache(
         options =>
         {
-            options.AllowMinificationInDevelopmentEnvironment = true;
-            options.DisablePoweredByHttpHeaders = true;
-        })
-    .AddHtmlMinification(
-        options =>
-        {
-            options.MinificationSettings.RemoveOptionalEndTags = false;
-            options.MinificationSettings.WhitespaceMinificationMode = WhitespaceMinificationMode.Safe;
+            options.AddBasePolicy(builder => builder.Cache());
+            options
+                .AddPolicy(
+                    "default",
+                    policy => policy.Expire(TimeSpan.FromSeconds(3600)));
         });
 
-// Bundling, minification and Sass transpiration (https://github.com/ligershark/WebOptimizer)
-builder.Services
-    .AddJsEngineSwitcher(
-        options => options.DefaultEngineName = V8JsEngine.EngineName)
-    .AddV8();
-builder.Services.AddWebOptimizer(
-    pipeline =>
+    // Cookie authentication.
+    builder.Services
+        .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+        .AddCookie(
+            options =>
+            {
+                options.LoginPath = "/login/";
+                options.LogoutPath = "/logout/";
+            });
+
+    // HTML minification (https://github.com/Taritsyn/WebMarkupMin)
+    builder.Services.AddSingleton<IWmmLogger, WmmAspNetCoreLogger>(); // Used by HTML minifier
+    builder.Services
+        .AddWebMarkupMin(
+            options =>
+            {
+                options.AllowMinificationInDevelopmentEnvironment = true;
+                options.DisablePoweredByHttpHeaders = true;
+            })
+        .AddHtmlMinification(
+            options =>
+            {
+                options.MinificationSettings.RemoveOptionalEndTags = false;
+                options.MinificationSettings.WhitespaceMinificationMode = WhitespaceMinificationMode.Safe;
+            });
+
+    // Bundling, minification and Sass transpiration (https://github.com/ligershark/WebOptimizer)
+    builder.Services
+        .AddJsEngineSwitcher(
+            options => options.DefaultEngineName = V8JsEngine.EngineName)
+        .AddV8();
+    builder.Services.AddWebOptimizer(
+        pipeline =>
+        {
+            _ = pipeline.MinifyJsFiles();
+            _ = pipeline
+                .CompileScssFiles()
+                .InlineImages(1);
+        });
+
+    // Compress HTTP response
+    builder.Services.AddResponseCompression(
+        options =>
+        {
+            options.Providers.Add<BrotliCompressionProvider>();
+            options.Providers.Add<GzipCompressionProvider>();
+            options.EnableForHttps = true;
+            options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(["application/json"]);
+        });
+    builder.Services.Configure<BrotliCompressionProviderOptions>(options => options.Level = CompressionLevel.Fastest);
+    builder.Services.Configure<GzipCompressionProviderOptions>(options => options.Level = CompressionLevel.Fastest);
+
+    Log.Information("Building the application host");
+    WebApplication app = builder.Build();
+
+    app.UseSerilogRequestLogging();
+
+    if (app.Environment.IsDevelopment())
     {
-        _ = pipeline.MinifyJsFiles();
-        _ = pipeline
-            .CompileScssFiles()
-            .InlineImages(1);
-    });
-
-// Compress HTTP response
-builder.Services.AddResponseCompression(
-    options =>
+        _ = app.UseDeveloperExceptionPage();
+    }
+    else
     {
-        options.Providers.Add<BrotliCompressionProvider>();
-        options.Providers.Add<GzipCompressionProvider>();
-        options.EnableForHttps = true;
-        options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(["application/json"]);
-    });
-builder.Services.Configure<BrotliCompressionProviderOptions>(options => options.Level = CompressionLevel.Fastest);
-builder.Services.Configure<GzipCompressionProviderOptions>(options => options.Level = CompressionLevel.Fastest);
+        _ = app.UseExceptionHandler("/Shared/Error");
+        _ = app.UseHsts();
+    }
 
-WebApplication app = builder.Build();
+    app.UseResponseCompression();
 
-if (app.Environment.IsDevelopment())
-{
-    _ = app.UseDeveloperExceptionPage();
-}
-else
-{
-    _ = app.UseExceptionHandler("/Shared/Error");
-    _ = app.UseHsts();
-}
+    app.Use(
+        (context, next) =>
+        {
+            context.Response.Headers.Append("X-Content-Type-Options", "nosniff");
+            return next();
+        });
 
-app.UseResponseCompression();
+    app.UseStatusCodePagesWithReExecute("/Shared/Error");
+    app.UseWebOptimizer();
 
-app.Use(
-    (context, next) =>
+    app.UseStaticFilesWithCache();
+
+    if (app.Configuration.GetValue<bool>("forcessl"))
     {
-        context.Response.Headers.Append("X-Content-Type-Options", "nosniff");
-        return next();
-    });
+        _ = app.UseHttpsRedirection();
+    }
 
-app.UseStatusCodePagesWithReExecute("/Shared/Error");
-app.UseWebOptimizer();
+    if (app.Configuration.GetValue<bool>("forceWwwPrefix"))
+    {
+        _ = app.UseRewriter(new RewriteOptions().AddRedirectToWwwPermanent());
+    }
 
-app.UseStaticFilesWithCache();
+    app.UseMetaWeblog("/metaweblog");
+    app.UseAuthentication();
 
-if (app.Configuration.GetValue<bool>("forcessl"))
-{
-    _ = app.UseHttpsRedirection();
+    app.UseWebMarkupMin();
+
+    app.UseRouting();
+
+    app.UseAuthorization();
+
+    app.MapControllerRoute("default", "{controller=Blog}/{action=Index}/{id?}");
+
+    Log.Information("Starting the application host");
+    await app.RunAsync();
 }
-
-if (app.Configuration.GetValue<bool>("forceWwwPrefix"))
+catch (Exception exception)
 {
-    _ = app.UseRewriter(new RewriteOptions().AddRedirectToWwwPermanent());
+    Log.Fatal(exception, "Miniblog terminated unexpectedly during startup or execution");
+    Environment.ExitCode = 1;
 }
-
-app.UseMetaWeblog("/metaweblog");
-app.UseAuthentication();
-
-app.UseWebMarkupMin();
-
-app.UseRouting();
-
-app.UseAuthorization();
-
-app.MapControllerRoute("default", "{controller=Blog}/{action=Index}/{id?}");
-
-app.Run();
+finally
+{
+    await Log.CloseAndFlushAsync();
+}

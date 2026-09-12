@@ -4,6 +4,7 @@ using JavaScriptEngineSwitcher.Extensions.MsDependencyInjection;
 using JavaScriptEngineSwitcher.V8;
 
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.Rewrite;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -36,6 +37,16 @@ try
 
     WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
+
+    builder.Services.Configure<ForwardedHeadersOptions>(options =>
+    {
+        options.ForwardedHeaders =
+            ForwardedHeaders.XForwardedFor |
+            ForwardedHeaders.XForwardedProto;
+
+        options.KnownProxies.Clear();
+        options.KnownIPNetworks.Clear();
+    });
     builder.Services.AddSerilog((services, configuration) => configuration
         .ReadFrom.Configuration(builder.Configuration)
         .ReadFrom.Services(services)
@@ -128,6 +139,8 @@ try
     Log.Information("Building the application host");
     WebApplication app = builder.Build();
 
+    app.UseForwardedHeaders();
+
     app.UseSerilogRequestLogging();
 
     if (app.Environment.IsDevelopment())
@@ -153,6 +166,9 @@ try
     app.UseWebOptimizer();
 
     app.UseStaticFilesWithCache();
+
+
+
 
     if (app.Configuration.GetValue<bool>("forcessl"))
     {

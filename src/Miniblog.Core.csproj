@@ -12,6 +12,8 @@
     <RepositoryUrl>https://github.com/madskristensen/Miniblog.Core.git</RepositoryUrl>
     <TargetFramework>net10.0</TargetFramework>
     <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
+    <UserSecretsId>32aa7e13-5de3-473b-8cb6-fffaa45bffd3</UserSecretsId>
+    <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Azure.ImageOptimizer" />
@@ -23,6 +25,7 @@
     <PackageReference Include="Microsoft.ClearScript.V8.Native.linux-x64" />
     <PackageReference Include="Microsoft.ClearScript.V8.Native.win-x64" />
     <PackageReference Include="Microsoft.SyndicationFeed.ReaderWriter" />
+    <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" />
     <PackageReference Include="Serilog.AspNetCore" />
     <PackageReference Include="WebEssentials.AspNetCore.CdnTagHelpers" />
     <PackageReference Include="WebEssentials.AspNetCore.PWA" />
